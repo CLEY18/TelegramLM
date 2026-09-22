@@ -9,6 +9,7 @@ import hydrogram.types
 
 from telegramlm.config import Settings
 from telegramlm.tools.base import (
+    MAX_PAGE_SIZE,
     JSONObjectSchema,
     JSONSchemaProperty,
     Tool,
@@ -98,7 +99,7 @@ class GetChannelPostsTool(Tool):
                 "channel": JSONSchemaProperty(
                     type="string", description="Channel username or numeric id"
                 ),
-                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=100),
+                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=MAX_PAGE_SIZE),
                 "offset": JSONSchemaProperty(type="integer", minimum=0),
             },
             required=["channel"],

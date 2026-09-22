@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     max_history_messages: int = 30
     """Number of most recent stored messages included in each model request."""
 
-    tool_default_limit: int = 20
+    tool_default_limit: int = 10
     """Default page size for account-capability tools."""
 
     agent_max_iterations: int = 8

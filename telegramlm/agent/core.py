@@ -214,7 +214,7 @@ class AgentCore:
                 messages.append(
                     ChatMessage(
                         role="tool",
-                        content=json.dumps(envelope),
+                        content=json.dumps(envelope, ensure_ascii=False),
                         tool_call_id=call.call_id,
                     )
                 )

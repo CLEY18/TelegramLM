@@ -10,6 +10,7 @@ from hydrogram.errors import RPCError
 
 from telegramlm.config import Settings
 from telegramlm.tools.base import (
+    MAX_PAGE_SIZE,
     JSONObjectSchema,
     JSONSchemaProperty,
     Tool,
@@ -79,7 +80,7 @@ class GetPostCommentsTool(Tool):
             properties={
                 "channel": JSONSchemaProperty(type="string"),
                 "message_id": JSONSchemaProperty(type="integer"),
-                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=100),
+                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=MAX_PAGE_SIZE),
                 "offset": JSONSchemaProperty(type="integer", minimum=0),
             },
             required=["channel", "message_id"],

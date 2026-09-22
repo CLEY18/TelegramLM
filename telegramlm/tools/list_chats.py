@@ -9,6 +9,7 @@ import hydrogram.types
 
 from telegramlm.config import Settings
 from telegramlm.tools.base import (
+    MAX_PAGE_SIZE,
     JSONObjectSchema,
     JSONSchemaProperty,
     Tool,
@@ -73,7 +74,7 @@ class ListChatsTool(Tool):
         """Accepted arguments per ``contracts/llm-tool-contracts.md``."""
         return JSONObjectSchema(
             properties={
-                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=100),
+                "limit": JSONSchemaProperty(type="integer", minimum=1, maximum=MAX_PAGE_SIZE),
                 "offset": JSONSchemaProperty(type="integer", minimum=0),
             }
         )
@@ -82,7 +83,7 @@ class ListChatsTool(Tool):
         """Fetch one page of dialogs as ``ChatSummary`` projections.
 
         Args:
-            arguments: Optional ``limit`` (1..100) and ``offset`` (>= 0).
+            arguments: Optional ``limit`` (1..50) and ``offset`` (>= 0).
 
         Returns:
             ``ok=True`` with ``{"chats": [...], "offset", "returned"}``, or a

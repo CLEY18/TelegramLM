@@ -14,6 +14,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from telegramlm.agent.core import AgentCore
+from telegramlm.llm.client import LLMContextOverflowError
 from telegramlm.messaging.models import UnifiedMessage
 from telegramlm.storage.store import MessageStore
 
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 # Short generic notice sent when a turn dies on an unexpected failure; the
 # full traceback goes to logs only (FR-021).
 GENERIC_ERROR_NOTICE = "Something went wrong, please try again later."
+
+CONTEXT_OVERFLOW_NOTICE = (
+    "That request was too large for the model context. Ask for fewer posts at a time and try again."
+)
 
 
 class ConversationQueueWorker:
@@ -60,9 +65,10 @@ class ConversationQueueWorker:
 
         Each iteration pops one message, drains any additional queued messages
         into the same batch, appends all of them to history in arrival order,
-        and runs a single consolidated agent turn. Unexpected exceptions are
+        and runs a single consolidated agent turn. A context-overflow failure is
+        answered by its own specific notice; every other unexpected exception is
         logged with traceback and answered by one generic notice so the loop
-        itself never dies (FR-021).
+        itself never dies (FR-021). Exactly one notice is sent per failed turn.
         """
         while True:
             batch = [await self._queue.get()]
@@ -76,6 +82,15 @@ class ConversationQueueWorker:
             logger.info("starting turn with %d coalesced message(s)", len(batch))
             try:
                 await self._agent_core.run_turn(batch)
+            except LLMContextOverflowError:
+                # Must precede the generic handler: it is a subclass of the base
+                # error and would otherwise be swallowed there. The service's
+                # full wording rides inside the logged exception message.
+                logger.warning("agent turn failed: model context overflow", exc_info=True)
+                try:
+                    await self._notify_error(CONTEXT_OVERFLOW_NOTICE)
+                except Exception:  # noqa: BLE001 - last-resort notice attempt
+                    logger.exception("error notice delivery also failed")
             except Exception:
                 logger.exception("agent turn failed")
                 try:

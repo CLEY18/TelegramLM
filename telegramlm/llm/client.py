@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 # reasoning models while bounding a hung upstream (plan performance goals).
 DEFAULT_TIMEOUT_SECONDS = 90.0
 
+_CONTEXT_OVERFLOW_MARKERS: tuple[str, ...] = (
+    "exceed_context_size_error",
+    "context_length_exceeded",
+    "exceeds the available context size",
+)
+
+
+def _is_context_overflow(text: str) -> bool:
+    """Detect a context-window rejection from the raw response body.
+
+    Args:
+        text: Untrusted response body of a failed request.
+
+    Returns:
+        ``True`` when any :data:`_CONTEXT_OVERFLOW_MARKERS` marker appears in
+        ``text`` (case-insensitive); ``False`` otherwise.
+    """
+    lowered = text.lower()
+    return any(marker in lowered for marker in _CONTEXT_OVERFLOW_MARKERS)
+
 
 class LLMError(Exception):
     """Base class for language-service failures."""
@@ -46,6 +66,17 @@ class LLMAPIError(LLMError):
         """
         super().__init__(message)
         self.status_code = status_code
+
+
+class LLMContextOverflowError(LLMAPIError):
+    """The request exceeded the model's context window.
+
+    A specialization of :class:`LLMAPIError` carrying no extra state: the
+    inherited ``status_code`` and message (which embeds the service's own
+    wording) already describe the failure. It exists so callers can branch on
+    an overflow without parsing error bodies or coupling to one server's field
+    names — detection is by markers in the raw response text alone.
+    """
 
 
 @dataclass(frozen=True)
@@ -237,6 +268,8 @@ class OpenAICompatibleClient:
 
         Raises:
             LLMTransportError: Connection failure or timeout.
+            LLMContextOverflowError: The request exceeded the model context
+                window (detected from markers in the response body).
             LLMAPIError: Non-success status or unparsable response body.
         """
         body: dict[str, JSONValue] = {
@@ -271,10 +304,10 @@ class OpenAICompatibleClient:
 
         if response.status_code >= 400:
             detail = response.text[:500]
-            raise LLMAPIError(
-                f"language service returned HTTP {response.status_code}: {detail}",
-                status_code=response.status_code,
-            )
+            message = f"language service returned HTTP {response.status_code}: {detail}"
+            if _is_context_overflow(response.text):
+                raise LLMContextOverflowError(message, status_code=response.status_code)
+            raise LLMAPIError(message, status_code=response.status_code)
         turn = self._parse_response(response)
         logger.debug(
             "chat-completions response: status=%d finish_reason=%s text_chars=%d tool_calls=%d",

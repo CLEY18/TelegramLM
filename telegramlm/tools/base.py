@@ -148,18 +148,21 @@ def failure_result(reason: str) -> ToolResult:
     return ToolResult(ok=False, payload=json.dumps({"error": reason}, ensure_ascii=False))
 
 
+MAX_PAGE_SIZE = 50
+
+
 def bounded_limit(raw: int | None, default: int) -> int:
-    """Clamp a model-supplied page size into the contract's 1..100 range.
+    """Clamp a model-supplied page size into the contract's ``1..MAX_PAGE_SIZE`` range.
 
     Args:
         raw: Requested limit or ``None`` when omitted.
         default: Fallback from ``TOOL_DEFAULT_LIMIT``.
 
     Returns:
-        An integer within ``[1, 100]``.
+        An integer within ``[1, MAX_PAGE_SIZE]``.
     """
     value = raw if raw is not None else default
-    return max(1, min(100, value))
+    return max(1, min(MAX_PAGE_SIZE, value))
 
 
 class Tool(ABC):
