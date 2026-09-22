@@ -1,0 +1,67 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+
+# Testing & coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build & packaging
+dist/
+build/
+*.whl
+*.tar.gz
+
+# Logs & temp files
+*.log
+logs/
+tmp/
+*.tmp
+*~
+
+# Generated docs / working artifacts
+.walkthrough/
+.specify/
+specs/
+
+# IDE
+.vscode/
+.idea/
+.fleet/
+*.swp
+*.swo
+
+# Opencode
+.opencode/
+
+# Agents
+AGENTS.md
+
+# OS (WSL + Windows + macOS)
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
