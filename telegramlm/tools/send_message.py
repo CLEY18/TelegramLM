@@ -12,8 +12,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
-import hydrogram.types
-
+from telegramlm.messaging.delivery import BotMessenger
 from telegramlm.messaging.models import Direction, MessageSource, UnifiedMessage
 from telegramlm.storage.store import MessageStore
 from telegramlm.tools.base import (
@@ -31,17 +30,15 @@ logger = logging.getLogger(__name__)
 class SendMessageTool(Tool):
     """Delivers a text message to the owner's private bot chat."""
 
-    def __init__(
-        self, bot_client: hydrogram.Client, owner_chat_id: int, store: MessageStore
-    ) -> None:
-        """Bind the tool to the bot client, owner chat, and history store.
+    def __init__(self, messenger: BotMessenger, owner_chat_id: int, store: MessageStore) -> None:
+        """Bind the tool to the delivery messenger, owner chat, and history store.
 
         Args:
-            bot_client: Connected bot client used for sending.
+            messenger: Outbound delivery path chunking over-long texts.
             owner_chat_id: Chat id of the private bot conversation.
             store: History sink receiving each delivered message as OUT.
         """
-        self._bot = bot_client
+        self._messenger = messenger
         self._owner_chat_id = owner_chat_id
         self._store = store
 
@@ -81,39 +78,43 @@ class SendMessageTool(Tool):
     async def execute(self, arguments: ToolArguments) -> ToolResult:
         """Send one text message and record it as an OUT unified message.
 
+        Texts longer than one Telegram message are delivered as sequential
+        chunks; history still receives the full text as a single entry.
+
         Args:
             arguments: ``text`` (required string) and optional
                 ``reply_to_message_id`` integer.
 
         Returns:
-            ``ok=True`` with the delivered message id, or a failure envelope
-            when the argument is missing or Telegram rejects the send.
+            ``ok=True`` with the first delivered message id, or a failure
+            envelope when the argument is missing or Telegram rejects the send.
         """
         text = arguments.get_str("text")
         if not text:
             return failure_result("argument 'text' is required and must be non-empty")
         reply_to = arguments.get_int("reply_to_message_id")
         try:
-            sent = await self._bot.send_message(
+            sent_ids = await self._messenger.send_text(
                 self._owner_chat_id, text, reply_to_message_id=reply_to
             )
         except Exception as exc:  # noqa: BLE001 - failures are data to the model
             logger.exception("send_message delivery failed")
             return failure_result(f"failed to deliver message: {exc}")
+        first_id = sent_ids[0]  # non-empty text always yields at least one chunk
         self._store.append(
             UnifiedMessage(
                 direction=Direction.OUT,
                 text=text,
                 source=MessageSource(
                     chat_id=self._owner_chat_id,
-                    message_id=sent.id,
+                    message_id=first_id,
                     sender_id=0,  # outbound bot messages carry no owner sender
-                    sent_at=sent.date or datetime.now(tz=UTC),
+                    sent_at=datetime.now(tz=UTC),
                 ),
             )
         )
-        logger.info("delivered assistant message id=%s", sent.id)
+        logger.info("delivered assistant message id=%s", first_id)
         return ToolResult(
             ok=True,
-            payload=json.dumps({"delivered": True, "message_id": sent.id}, ensure_ascii=False),
+            payload=json.dumps({"delivered": True, "message_id": first_id}, ensure_ascii=False),
         )

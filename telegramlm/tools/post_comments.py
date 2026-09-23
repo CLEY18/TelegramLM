@@ -109,25 +109,26 @@ class GetPostCommentsTool(Tool):
 
         comments: list[dict[str, str | int | None]] = []
         try:
-            replies = await self._user.get_discussion_replies(
+            # ``get_discussion_replies`` is an async generator function: calling
+            # it yields the generator itself, so there is nothing to await here.
+            replies = self._user.get_discussion_replies(
                 resolve_channel(channel_raw), message_id, limit=offset + limit
             )
             index = 0
-            if replies is not None:
-                async for reply in replies:
-                    if index < offset:
-                        index += 1
-                        continue
-                    if len(comments) >= limit:
-                        break
-                    comments.append(
-                        {
-                            "author": _author_label(reply),
-                            "date": reply.date.isoformat() if reply.date else None,
-                            "text": reply.text or reply.caption,
-                        }
-                    )
+            async for reply in replies:
+                if index < offset:
                     index += 1
+                    continue
+                if len(comments) >= limit:
+                    break
+                comments.append(
+                    {
+                        "author": _author_label(reply),
+                        "date": reply.date.isoformat() if reply.date else None,
+                        "text": reply.text or reply.caption,
+                    }
+                )
+                index += 1
         except RPCError as exc:
             if exc.id in _NO_DISCUSSION_ERROR_IDS:
                 logger.info(

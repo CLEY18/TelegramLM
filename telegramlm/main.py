@@ -24,6 +24,7 @@ from telegramlm.agent.prompts import GREETING_TEXT
 from telegramlm.agent.queue_worker import GENERIC_ERROR_NOTICE, ConversationQueueWorker
 from telegramlm.config import Settings
 from telegramlm.llm.client import OpenAICompatibleClient
+from telegramlm.messaging.delivery import BotMessenger
 from telegramlm.messaging.models import UnifiedMessage
 from telegramlm.messaging.processor import MessageProcessor
 from telegramlm.storage.memory import InMemoryMessageStore
@@ -144,16 +145,17 @@ async def run(settings: Settings) -> None:
         bot_token=settings.bot_token.get_secret_value(),
         in_memory=True,
     )
+    messenger = BotMessenger(bot)
 
     async def send_notice(text: str) -> None:
         """Deliver a short system notice (unsupported/error/greeting) to the owner."""
-        await bot.send_message(owner_chat_id, text)
+        await messenger.send_text(owner_chat_id, text)
 
     agent_core = AgentCore(
         llm_client=llm_client,
         registry=registry,
         store=store,
-        bot_client=bot,
+        messenger=messenger,
         settings=settings,
     )
     worker = ConversationQueueWorker(agent_core=agent_core, store=store, notify_error=send_notice)
@@ -169,7 +171,9 @@ async def run(settings: Settings) -> None:
         notify_unsupported=send_notice,
     )
 
-    registry.register(SendMessageTool(bot_client=bot, owner_chat_id=owner_chat_id, store=store))
+    registry.register(
+        SendMessageTool(messenger=messenger, owner_chat_id=owner_chat_id, store=store)
+    )
 
     @bot.on_message()
     async def handle_update(_client: hydrogram.Client, message: hydrogram.types.Message) -> None:

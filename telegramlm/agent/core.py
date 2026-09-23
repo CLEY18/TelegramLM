@@ -17,9 +17,6 @@ import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-import hydrogram.types
-from hydrogram.enums import ChatAction
-
 from telegramlm.agent.prompts import SYSTEM_PROMPT
 from telegramlm.config import Settings
 from telegramlm.llm.client import (
@@ -30,6 +27,7 @@ from telegramlm.llm.client import (
     TextPart,
     ToolCallRequest,
 )
+from telegramlm.messaging.delivery import BotMessenger
 from telegramlm.messaging.models import Direction, MessageSource, UnifiedMessage
 from telegramlm.storage.store import MessageStore
 from telegramlm.tools.base import JSONValue, ToolRegistry
@@ -93,7 +91,7 @@ class AgentCore:
         llm_client: OpenAICompatibleClient,
         registry: ToolRegistry,
         store: MessageStore,
-        bot_client: hydrogram.Client,
+        messenger: BotMessenger,
         settings: Settings,
     ) -> None:
         """Wire the agent to its collaborators.
@@ -102,13 +100,13 @@ class AgentCore:
             llm_client: Language-service client issuing chat-completions calls.
             registry: Central tool registry (payload + dispatch + size caps).
             store: Conversation history providing and receiving context.
-            bot_client: Bot client for typing indicators and fallback delivery.
+            messenger: Outbound delivery for typing indicators and fallback text.
             settings: Tunables (history bound, iteration cap, vision flag).
         """
         self._llm = llm_client
         self._registry = registry
         self._store = store
-        self._bot = bot_client
+        self._messenger = messenger
         self._settings = settings
         self._turn_counter: int = 0
 
@@ -229,7 +227,7 @@ class AgentCore:
             return
         if last_text:
             logger.info("turn %d produced no delivery; sending fallback text", turn_number)
-            await self._bot.send_message(chat_id, last_text)
+            await self._messenger.send_text(chat_id, last_text)
             self._record_out(chat_id, last_text)
         else:
             logger.warning(
@@ -239,7 +237,7 @@ class AgentCore:
                 iterations_run,
                 failed_calls,
             )
-            await self._bot.send_message(chat_id, _NO_OUTPUT_NOTICE)
+            await self._messenger.send_text(chat_id, _NO_OUTPUT_NOTICE)
 
     def _record_out(self, chat_id: int, text: str) -> None:
         """Append fallback-delivered assistant text to history as an OUT message.
@@ -304,7 +302,7 @@ class AgentCore:
         """
         while True:
             try:
-                await self._bot.send_chat_action(chat_id, ChatAction.TYPING)
+                await self._messenger.send_typing(chat_id)
             except Exception:  # noqa: BLE001 - indicator is best-effort feedback
                 logger.warning("typing indicator failed; continuing turn", exc_info=True)
                 return
