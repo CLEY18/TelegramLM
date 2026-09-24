@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import logging
+import unicodedata
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -61,12 +62,34 @@ def _encode_image_data_url(mime_type: str, data: bytes) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def _has_visible_content(text: str | None) -> bool:
+    """Report whether a model text carries at least one printable character.
+
+    Unicode whitespace and format characters (zero-width space/joiner, BOM —
+    category ``Cf``) are invisible in Telegram; a string made only of them is
+    not an answer the owner can read, so it must never count as deliverable
+    text nor overwrite a real earlier one.
+
+    Args:
+        text: The assistant text to inspect, possibly ``None``.
+
+    Returns:
+        ``True`` when any character remains after dropping whitespace and
+        invisible format characters.
+    """
+    if not text:
+        return False
+    return any(not char.isspace() and unicodedata.category(char) != "Cf" for char in text)
+
+
 def _preview(value: str | None, limit: int = 200) -> str:
     """Collapse a possibly long string into one bounded line for debug logs.
 
     Whitespace runs (newlines, base64 payloads) become single spaces so every
-    log record stays on one line; ``None``/empty renders as ``<empty>`` and a
-    cut tail reports how many characters were dropped.
+    log record stays on one line; ``None``/empty renders as ``<empty>``, text
+    without any printable character as an ``<invisible:N chars>`` marker (so a
+    zero-width stop is not mistaken for a blank preview), and a cut tail
+    reports how many characters were dropped.
 
     Args:
         value: The string to preview, possibly ``None``.
@@ -78,6 +101,8 @@ def _preview(value: str | None, limit: int = 200) -> str:
     if not value:
         return "<empty>"
     collapsed = " ".join(value.split())
+    if not _has_visible_content(collapsed):
+        return f"<invisible:{len(value)} chars>"
     if len(collapsed) <= limit:
         return collapsed
     return f"{collapsed[:limit]}... [+{len(collapsed) - limit} chars]"
@@ -164,7 +189,8 @@ class AgentCore:
                 len(messages),
             )
             turn: AssistantTurn = await self._llm.complete(messages, tools_payload)
-            if turn.text:
+            if _has_visible_content(turn.text):
+                # Invisible-only text must never overwrite a real earlier answer.
                 last_text = turn.text
             logger.debug(
                 "turn %d iteration %d response: finish_reason=%s text=%s tool_calls=%d",
@@ -225,7 +251,7 @@ class AgentCore:
 
         if delivered:
             return
-        if last_text:
+        if last_text is not None and _has_visible_content(last_text):
             logger.info("turn %d produced no delivery; sending fallback text", turn_number)
             await self._messenger.send_text(chat_id, last_text)
             self._record_out(chat_id, last_text)

@@ -18,6 +18,7 @@ from telegramlm.tools.base import (
     ToolResult,
     bounded_limit,
     failure_result,
+    paginate_page,
 )
 from telegramlm.tools.channel_posts import resolve_channel
 
@@ -47,6 +48,23 @@ def _as_str(value: str | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _comment_projection(reply: hydrogram.types.Message) -> dict[str, str | int | None]:
+    """Project one discussion reply to the contract's ``CommentSummary`` shape.
+
+    Args:
+        reply: A comment message from the user client.
+
+    Returns:
+        Mapping with ``author``, ISO ``date``, and ``text`` (caption fallback)
+        per llm-tool-contracts.md.
+    """
+    return {
+        "author": _author_label(reply),
+        "date": reply.date.isoformat() if reply.date else None,
+        "text": reply.text or reply.caption,
+    }
+
+
 class GetPostCommentsTool(Tool):
     """Reads the comment thread under one channel post, paged."""
 
@@ -70,7 +88,8 @@ class GetPostCommentsTool(Tool):
         """Model-facing purpose statement."""
         return (
             "Reads the comment thread (discussion replies) under a specific "
-            "channel post, one page at a time."
+            "channel post, one page at a time. Results are paged: when the payload "
+            "reports has_more=true, more comments exist beyond this page."
         )
 
     @property
@@ -94,9 +113,10 @@ class GetPostCommentsTool(Tool):
                 ``limit``/``offset``.
 
         Returns:
-            ``ok=True`` with ``{"comments": [...], "offset", "returned"}``;
-            posts without any discussion yield an empty list rather than an
-            error, while genuine access failures become ``ok=False`` envelopes.
+            ``ok=True`` with ``{"comments": [...], "offset", "returned",
+            "has_more"}``; posts without any discussion yield an empty list
+            rather than an error, while genuine access failures become
+            ``ok=False`` envelopes.
         """
         channel_raw = arguments.get_str("channel")
         if not channel_raw:
@@ -108,27 +128,15 @@ class GetPostCommentsTool(Tool):
         offset = max(0, arguments.get_int("offset") or 0)
 
         comments: list[dict[str, str | int | None]] = []
+        has_more = False
         try:
             # ``get_discussion_replies`` is an async generator function: calling
             # it yields the generator itself, so there is nothing to await here.
             replies = self._user.get_discussion_replies(
-                resolve_channel(channel_raw), message_id, limit=offset + limit
+                resolve_channel(channel_raw), message_id, limit=offset + limit + 1
             )
-            index = 0
-            async for reply in replies:
-                if index < offset:
-                    index += 1
-                    continue
-                if len(comments) >= limit:
-                    break
-                comments.append(
-                    {
-                        "author": _author_label(reply),
-                        "date": reply.date.isoformat() if reply.date else None,
-                        "text": reply.text or reply.caption,
-                    }
-                )
-                index += 1
+            page, has_more = await paginate_page(replies, offset, limit)
+            comments = [_comment_projection(reply) for reply in page]
         except RPCError as exc:
             if exc.id in _NO_DISCUSSION_ERROR_IDS:
                 logger.info(
@@ -140,5 +148,10 @@ class GetPostCommentsTool(Tool):
         except Exception as exc:  # noqa: BLE001 - failures are data to the model
             logger.exception("get_post_comments failed for %r", channel_raw)
             return failure_result(f"failed to read comments of {channel_raw!r}: {exc}")
-        payload = {"comments": comments, "offset": offset, "returned": len(comments)}
+        payload = {
+            "comments": comments,
+            "offset": offset,
+            "returned": len(comments),
+            "has_more": has_more,
+        }
         return ToolResult(ok=True, payload=json.dumps(payload, ensure_ascii=False))

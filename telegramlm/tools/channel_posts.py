@@ -17,6 +17,7 @@ from telegramlm.tools.base import (
     ToolResult,
     bounded_limit,
     failure_result,
+    paginate_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,24 @@ def _describe_media(message: hydrogram.types.Message) -> str | None:
     return None
 
 
+def _post_projection(message: hydrogram.types.Message) -> dict[str, str | int | None]:
+    """Project one channel post to the contract's ``PostSummary`` shape.
+
+    Args:
+        message: A channel post from the user client.
+
+    Returns:
+        Mapping with ``message_id``, ISO ``date``, ``text`` (caption fallback),
+        and optional ``media_description`` per llm-tool-contracts.md.
+    """
+    return {
+        "message_id": message.id,
+        "date": message.date.isoformat() if message.date else None,
+        "text": message.text or message.caption,
+        "media_description": _describe_media(message),
+    }
+
+
 class GetChannelPostsTool(Tool):
     """Reads recent posts of an accessible channel newest-first, paged."""
 
@@ -88,7 +107,8 @@ class GetChannelPostsTool(Tool):
         """Model-facing purpose statement."""
         return (
             "Reads recent posts from a channel the owner's account can access, "
-            "newest first, one page at a time."
+            "newest first, one page at a time. Results are paged: when the payload "
+            "reports has_more=true, more posts exist beyond this page."
         )
 
     @property
@@ -112,37 +132,24 @@ class GetChannelPostsTool(Tool):
             arguments: Required ``channel`` plus optional ``limit``/``offset``.
 
         Returns:
-            ``ok=True`` with ``{"posts": [...], "offset", "returned"}`` where
-            each post carries id, ISO date, text, and media description;
-            access failures become ``ok=False`` envelopes (FR-016).
+            ``ok=True`` with ``{"posts": [...], "offset", "returned",
+            "has_more"}`` where each post carries id, ISO date, text, and media
+            description; access failures become ``ok=False`` envelopes (FR-016).
         """
         channel_raw = arguments.get_str("channel")
         if not channel_raw:
             return failure_result("argument 'channel' is required")
         limit = bounded_limit(arguments.get_int("limit"), self._settings.tool_default_limit)
         offset = max(0, arguments.get_int("offset") or 0)
-        posts: list[dict[str, str | int | None]] = []
         try:
-            index = 0
-            async for message in self._user.get_chat_history(
-                resolve_channel(channel_raw), limit=offset + limit
-            ):
-                if index < offset:
-                    index += 1
-                    continue
-                if len(posts) >= limit:
-                    break
-                posts.append(
-                    {
-                        "message_id": message.id,
-                        "date": message.date.isoformat() if message.date else None,
-                        "text": message.text or message.caption,
-                        "media_description": _describe_media(message),
-                    }
-                )
-                index += 1
+            page, has_more = await paginate_page(
+                self._user.get_chat_history(resolve_channel(channel_raw), limit=offset + limit + 1),
+                offset,
+                limit,
+            )
         except Exception as exc:  # noqa: BLE001 - access errors are data to the model
             logger.exception("get_channel_posts failed for %r", channel_raw)
             return failure_result(f"failed to read posts of {channel_raw!r}: {exc}")
-        payload = {"posts": posts, "offset": offset, "returned": len(posts)}
+        posts = [_post_projection(message) for message in page]
+        payload = {"posts": posts, "offset": offset, "returned": len(posts), "has_more": has_more}
         return ToolResult(ok=True, payload=json.dumps(payload, ensure_ascii=False))

@@ -17,6 +17,7 @@ from telegramlm.tools.base import (
     ToolResult,
     bounded_limit,
     failure_result,
+    paginate_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,8 @@ class ListChatsTool(Tool):
         """Model-facing purpose statement."""
         return (
             "Lists the owner's Telegram dialogs (private chats, groups, channels "
-            "they participate in), one page at a time."
+            "they participate in), one page at a time. Results are paged: when "
+            "the payload reports has_more=true, more dialogs exist beyond this page."
         )
 
     @property
@@ -86,24 +88,18 @@ class ListChatsTool(Tool):
             arguments: Optional ``limit`` (1..50) and ``offset`` (>= 0).
 
         Returns:
-            ``ok=True`` with ``{"chats": [...], "offset", "returned"}``, or a
-            failure envelope when the account read fails.
+            ``ok=True`` with ``{"chats": [...], "offset", "returned",
+            "has_more"}``, or a failure envelope when the account read fails.
         """
         limit = bounded_limit(arguments.get_int("limit"), self._settings.tool_default_limit)
         offset = max(0, arguments.get_int("offset") or 0)
-        chats: list[dict[str, str | int | None]] = []
         try:
-            index = 0
-            async for dialog in self._user.get_dialogs(limit=offset + limit):
-                if index < offset:
-                    index += 1
-                    continue
-                if len(chats) >= limit:
-                    break
-                chats.append(_chat_projection(dialog.chat))
-                index += 1
+            page, has_more = await paginate_page(
+                self._user.get_dialogs(limit=offset + limit + 1), offset, limit
+            )
         except Exception as exc:  # noqa: BLE001 - failures are data to the model
             logger.exception("list_chats failed")
             return failure_result(f"failed to list dialogs: {exc}")
-        payload = {"chats": chats, "offset": offset, "returned": len(chats)}
+        chats = [_chat_projection(dialog.chat) for dialog in page]
+        payload = {"chats": chats, "offset": offset, "returned": len(chats), "has_more": has_more}
         return ToolResult(ok=True, payload=json.dumps(payload, ensure_ascii=False))

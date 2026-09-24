@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -163,6 +164,40 @@ def bounded_limit(raw: int | None, default: int) -> int:
     """
     value = raw if raw is not None else default
     return max(1, min(MAX_PAGE_SIZE, value))
+
+
+async def paginate_page[T](
+    items: AsyncIterator[T], offset: int, limit: int
+) -> tuple[list[T], bool]:
+    """Collect one page from an async iterator and report whether more follow.
+
+    Applies the N+1 pattern: consumes at most ``offset + limit + 1`` items so
+    the caller learns a further page exists without draining the whole source.
+    The probe item is detected by reaching another iteration after the page is
+    full, so an exactly-full final page reports ``has_more=False`` correctly.
+
+    Args:
+        items: Async iterator over the full result sequence.
+        offset: Number of leading items to skip.
+        limit: Maximum number of items kept for the page.
+
+    Returns:
+        A ``(page, has_more)`` pair where ``has_more`` is ``True`` when an item
+        exists beyond the requested page.
+    """
+    page: list[T] = []
+    has_more = False
+    index = 0
+    async for item in items:
+        if index < offset:
+            index += 1
+            continue
+        if len(page) >= limit:
+            has_more = True
+            break
+        page.append(item)
+        index += 1
+    return page, has_more
 
 
 class Tool(ABC):
