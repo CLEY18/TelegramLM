@@ -2,8 +2,9 @@
 
 The processor is the only component that touches raw hydrogram message types:
 it unwraps forwards, buffers media-group (album) fragments behind a
-configurable idle window, downloads and classifies attachments, applies the
-unsupported-content rules (FR-004..FR-007), and emits exactly one
+configurable idle window re-armed by every arriving fragment, downloads and
+classifies attachments, applies the unsupported-content rules (FR-004..FR-007),
+and emits exactly one
 :class:`~telegramlm.messaging.models.UnifiedMessage` per logical message — or
 a single "not supported" notice instead. It knows nothing about the LLM;
 accepted messages leave through the injected ``dispatch`` callback.
@@ -101,6 +102,8 @@ class _AlbumBuffer:
         """
         self.chat_id = chat_id
         self.first_message_id = first_message_id
+        self.flush_task: asyncio.Task[None] | None = None
+        """Pending idle-window task; re-created (re-armed) by every fragment."""
 
 
 class MessageProcessor:
@@ -152,21 +155,51 @@ class MessageProcessor:
     # --- Media-group buffering (FR-004) ------------------------------------
 
     def _accept_fragment(self, group_id: str, message: hydrogram.types.Message) -> None:
-        """Register an album fragment and (re)arm nothing if one is pending.
+        """Register an album fragment and re-arm the collection window.
+
+        Every arriving fragment restarts the idle timer at full length, so an
+        album whose pieces arrive spread out still flushes once as a whole;
+        while fragments keep coming faster than the window, the flush is
+        deferred (media groups are finite, so this wait always ends). A group
+        already flushed discards its late duplicates instead (FR-004).
 
         Args:
             group_id: Telegram ``media_group_id`` of the album.
             message: The arriving fragment.
         """
-        if group_id in self._flushed_ids or group_id in self._buffers:
-            logger.debug("discarding duplicate/late fragment of group %s", group_id)
+        if group_id in self._flushed_ids:
+            logger.debug("discarding late fragment of flushed group %s", group_id)
             return
-        buffer = _AlbumBuffer(message.chat.id, message.id)
-        self._buffers[group_id] = buffer
-        asyncio.create_task(self._flush_after(group_id), name=f"album-flush-{group_id}")
+        buffer = self._buffers.get(group_id)
+        if buffer is None:
+            buffer = _AlbumBuffer(message.chat.id, message.id)
+            self._buffers[group_id] = buffer
+        elif buffer.flush_task is not None:
+            # Safe to cancel unconditionally: while the group is still in
+            # ``_buffers`` its task can only be suspended in the idle sleep;
+            # once the sleep ends the buffer is popped synchronously.
+            buffer.flush_task.cancel()
+        self._schedule_flush(group_id, buffer)
+
+    def _schedule_flush(self, group_id: str, buffer: _AlbumBuffer) -> None:
+        """Start (or restart) the idle-window task for one buffered album.
+
+        Args:
+            group_id: Album identifier being collected.
+            buffer: Buffer whose ``flush_task`` attribute receives the task.
+        """
+        buffer.flush_task = asyncio.create_task(
+            self._flush_after(group_id), name=f"album-flush-{group_id}"
+        )
 
     async def _flush_after(self, group_id: str) -> None:
         """Wait out the idle window, then normalize and emit the whole album.
+
+        The window restarts on every fragment (see :meth:`_accept_fragment`),
+        so this task only ever completes for a group that has fallen quiet;
+        when it fires, the group is claimed as flushed *before* the network
+        fetch so fragments arriving mid-flight are discarded rather than
+        re-buffered into a second dispatch.
 
         Args:
             group_id: Album identifier whose collection is being awaited.
@@ -178,15 +211,14 @@ class MessageProcessor:
         buffer = self._buffers.pop(group_id, None)
         if buffer is None:
             return
+        self._remember_flushed(group_id)
         try:
             fragments = await self._bot.get_media_group(buffer.chat_id, group_id)
         except Exception:
             logger.exception("failed to fetch media group %s", group_id)
             await self._notify_unsupported(_UNSUPPORTED_NOTICE_TEXT)
-            self._remember_flushed(group_id)
             return
         unified = await self._normalize(list(fragments))
-        self._remember_flushed(group_id)
         if unified is None:
             logger.info("album %s had no supported content", group_id)
             await self._notify_unsupported(_UNSUPPORTED_NOTICE_TEXT)

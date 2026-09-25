@@ -45,6 +45,7 @@ tmp/
 .walkthrough/
 .specify/
 specs/
+docs/
 
 # IDE
 .vscode/

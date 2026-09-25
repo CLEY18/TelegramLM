@@ -21,10 +21,6 @@ from telegramlm.tools.base import JSONValue
 
 logger = logging.getLogger(__name__)
 
-# Wall-clock timeout for one chat-completions request; generous enough for
-# reasoning models while bounding a hung upstream (plan performance goals).
-DEFAULT_TIMEOUT_SECONDS = 90.0
-
 _CONTEXT_OVERFLOW_MARKERS: tuple[str, ...] = (
     "exceed_context_size_error",
     "context_length_exceeded",
@@ -235,7 +231,7 @@ class OpenAICompatibleClient:
         base_url: str,
         api_key: SecretStr,
         model: str,
-        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: float,
     ) -> None:
         """Store connection parameters for future completion calls.
 
